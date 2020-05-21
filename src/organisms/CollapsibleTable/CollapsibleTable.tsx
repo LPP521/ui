@@ -57,7 +57,7 @@ interface State {
 
 export const transformRowToCards = (
   row: ReactNode[],
-  head: string[],
+  head: (string | JSX.Element)[],
   primaryColumnIndex: number,
   iconColumns: string[] = [],
 ): StackedCardData =>
@@ -65,9 +65,9 @@ export const transformRowToCards = (
     (prev: StackedCardData, next, index) => {
       const label = head[index];
 
-      if (index === primaryColumnIndex) {
+      if (index === primaryColumnIndex && !iconColumns) {
         prev.heading = next;
-      } else if (iconColumns.includes(label)) {
+      } else if (iconColumns.includes(label as string)) {
         prev.icons!.push(next);
       } else {
         prev.entries.push([label, next]);
@@ -117,7 +117,7 @@ const GroupHeading = styled(Typography)`
   border-bottom: 0.0625rem solid #dde3ee;
   background: ${props => props.theme.tableHeadBackground};
   text-transform: uppercase;
-  font-size: ${scale(1)};
+  font-size: ${scale(2)};
   cursor: pointer;
 ` as StyledHTMLElement;
 
@@ -136,6 +136,19 @@ const GroupHeadingCaret = styled(Icon)<Flippable>`
     }
   `};
 `;
+
+const StackedCardContainer = styled.div`
+  position: relative;
+`;
+const StackedCardOverlay = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 100%;
+`;
+
+const isFunction = (item: any) => typeof item === 'function';
 
 export class CollapsibleTable extends Component<Props, State> {
   public static defaultProps = {
@@ -169,6 +182,7 @@ export class CollapsibleTable extends Component<Props, State> {
 
   public render() {
     const { mode, collapsedGroups } = this.state;
+    const { overlay, overlayRows } = this.props;
 
     return mode === CollapsibleTableModes.Mobile ? (
       transformTableToCards(this.props, collapsedGroups).map(
@@ -187,7 +201,15 @@ export class CollapsibleTable extends Component<Props, State> {
             </GroupHeading>
           ) : (
             // The element being iterated on is table data.
-            <StackedCard key={index} {...cardData} />
+            <StackedCardContainer>
+              <StackedCard key={index} {...cardData} />
+              {overlay &&
+                overlayRows!.includes(index) && (
+                  <StackedCardOverlay>
+                    {isFunction(overlay) ? overlay(index) : overlay}
+                  </StackedCardOverlay>
+                )}
+            </StackedCardContainer>
           ),
       )
     ) : (

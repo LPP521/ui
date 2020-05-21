@@ -8,21 +8,26 @@ import React, {
 } from 'react';
 import { StyledComponentClass } from 'styled-components';
 
-import { Icon } from '../../atoms';
 import styled from '../../styled-components';
 import Theme from '../../Theme';
 import Typography from '../../Typography';
+import IconArrow from '../IconArrow';
 
 export interface TableGroup {
   title: string;
   entries: ReactNode[][];
+  offset?: number;
 }
 
+type sortFunctionType = (heading?: string | null) => (a: any, b: any) => number;
+
 export interface TableConfig {
-  sortableColumn?: string | null;
+  sortableColumn?: string | string[];
+  hiddenHeadings?: (string | JSX.Element)[]; //Hack to allow a head to include JSX.Elements
   reversedColumns?: string[];
-  maxHeight?: string;
-  sortFunction?(a: any, b: any): number;
+  sortFunction?: sortFunctionType;
+  overlayRoot?: boolean;
+  handleRowClicked?(index: number): void;
 }
 
 export interface TableContent {
@@ -31,9 +36,9 @@ export interface TableContent {
 }
 
 export interface TableData extends TableContent {
-  head: string[];
+  head: (string | JSX.Element)[];
   overlay?: ReactNode;
-  overlayRows?: number[];
+  overlayRows?: (number | string)[];
   config?: TableConfig;
 }
 
@@ -49,6 +54,7 @@ interface State {
     [title: string]: boolean;
   };
   sortedColumnDirection: ColumnDirections;
+  currentSortColumn: string | null;
 }
 
 interface CellProps {
@@ -56,18 +62,22 @@ interface CellProps {
 }
 
 const sharedCellProperties = ({ isReversed }: CellProps) => `
-  min-width: 1em;
-  padding: 1em;
+  min-width: .75em;
+  padding: .75em;
   text-align: ${isReversed ? 'right' : 'left'};
+  & >
 `;
 
 const TableHead = styled.tr`
+  border-top: 0.0625em solid ${props => props.theme.tableHeadBorder};
   border-bottom: 0.0625em solid ${props => props.theme.tableHeadBorder};
   background: ${props => props.theme.tableHeadBackground};
+  font-size: 0.9em;
 `;
 
 interface HeadingProps extends CellProps {
   isSortable?: boolean;
+  isHidden?: boolean;
 }
 
 const TableHeading = styled(Typography)<HeadingProps>`
@@ -76,11 +86,14 @@ const TableHeading = styled(Typography)<HeadingProps>`
   font-weight: normal;
   text-transform: uppercase;
   letter-spacing: 0.0625em;
-  border-top: '0px';
-  position: sticky;
-  top: 0;
-  background: ${props => props.theme.tableHeadBackground};
   cursor: ${props => (props.isSortable ? 'pointer' : 'inherit')};
+    ${props =>
+      props.isHidden &&
+      `
+    position: fixed;
+    top: -9999em;
+    left: -9999em;
+  `};
 ` as StyledComponentClass<
   ClassAttributes<HTMLTableHeaderCellElement> &
     ThHTMLAttributes<HTMLTableHeaderCellElement> &
@@ -92,7 +105,7 @@ TableHeading.defaultProps = {
   as: 'th',
 };
 
-const TableRow = styled.tr`
+export const TableRow = styled.tr`
   border-bottom: 0.0625em solid ${props => props.theme.tableRowBorder};
 `;
 
@@ -101,34 +114,7 @@ const TableGroupHead = styled(TableRow)`
   cursor: pointer;
 `;
 
-const TableCaret = styled(Icon)<{ isFlipped?: boolean }>`
-  margin-left: 0.5em;
-  vertical-align: middle;
-
-  svg {
-    color: #55b6e2;
-  }
-
-  ${props =>
-    props.isFlipped &&
-    `
-    svg {
-      transform: rotateX(180deg);
-    }
-  `};
-`;
-
-const TableContainer = styled('div')<{ maxHeight?: string }>`
-  overflow: auto;
-  max-height: ${({ maxHeight }) => maxHeight};
-`;
-
-const TableHeaderContainer = styled.thead`
-  & th {
-  }
-`;
-
-const TableCell = styled(Typography)`
+export const TableCell = styled(Typography)`
   ${sharedCellProperties};
 ` as StyledComponentClass<
   DetailedHTMLProps<
@@ -138,14 +124,16 @@ const TableCell = styled(Typography)`
   Theme
 >;
 
+const SortPlaceholder = styled.div`
+  width: calc(9px + 0.5em);
+  display: inline-block;
+`;
+
 TableCell.defaultProps = {
   as: 'td',
 };
 
-// tslint:disable-next-line
-const noop = () => {};
-
-export const defaultColumnSort = (a: any, b: any): number => {
+export const defaultColumnSort = () => (a: any, b: any): number => {
   try {
     const aText = a.props.children;
     const bText = b.props.children;
@@ -157,15 +145,39 @@ export const defaultColumnSort = (a: any, b: any): number => {
   }
 };
 
+const getHeaderColumn = (head: JSX.Element | string): string => {
+  if (typeof head === 'string') {
+    return head;
+    // tslint:disable-next-line: strict-type-predicates
+  } else if (typeof head === 'object' && head.key) {
+    return head.key as string;
+  }
+  throw new Error(
+    'Header should be either a string or JSX element with key identifier',
+  );
+};
+
+const getHeaderColumns = (head: (JSX.Element | string)[]): string[] =>
+  head.map(getHeaderColumn);
+
+// tslint:disable-next-line: no-empty
+const noOp = () => {};
+const isFunction = (item: any) => typeof item === 'function';
+
 export const getSortedRows = (
   head: any[],
   body: ReactNode[][],
   config: TableConfig,
   sortedColumnDirection: ColumnDirections,
+  currentSortColumn: string | null,
 ): ReactNode[][] => {
-  const { sortableColumn, sortFunction = defaultColumnSort } = config;
+  const { sortFunction = defaultColumnSort } = config;
   // Determine which column to order.
-  const sortableColumnIndex = head.indexOf(sortableColumn);
+  const headerColumns = getHeaderColumns(head);
+  const sortableColumnIndex = Math.max(
+    headerColumns.indexOf(currentSortColumn || ''),
+    0,
+  );
   // Create an array containing the data from each row in the specified column.
   const sortableColumnEntries = body.map(row => row[sortableColumnIndex]).map(
     entry =>
@@ -177,7 +189,9 @@ export const getSortedRows = (
       ),
   );
   // Rearrange that array based on the selected sort.
-  const sortedColumnEntries = [...sortableColumnEntries].sort(sortFunction);
+  const sortedColumnEntries = [...sortableColumnEntries].sort(
+    sortFunction(currentSortColumn),
+  );
   // Translate the new order into the indexes of the original order to determine the change.
   const sortedColumnIndices = sortedColumnEntries.map(sortedEntry =>
     sortableColumnEntries.indexOf(sortedEntry),
@@ -204,6 +218,7 @@ class AbstractTable extends Component<Props, State> {
   public state: State = {
     collapsedGroups: {},
     sortedColumnDirection: ColumnDirections.Forward,
+    currentSortColumn: null,
   };
 
   public componentDidMount() {
@@ -213,80 +228,99 @@ class AbstractTable extends Component<Props, State> {
   public render() {
     const { head, config, overlay, overlayRows, ...rest } = this.props;
     const { collapsedGroups, sortedColumnDirection } = this.state;
+    const { overlayRoot } = config || { overlayRoot: false };
     const { body, groups } = this.getSortedLayout();
 
-    const isReversedColumn = (heading: string) =>
+    const isReversedColumn = (heading: any) =>
       config &&
       config.reversedColumns &&
       config.reversedColumns.includes(heading);
 
     return (
-      <TableContainer maxHeight={config && config.maxHeight}>
-        <table {...rest}>
-          <TableHeaderContainer>
-            <TableHead>
-              {head.map((heading, index) => {
-                const isSortableColumn =
-                  config && config.sortableColumn === heading;
+      <table {...rest}>
+        <thead>
+          <TableHead>
+            {head.map((heading, index) => {
+              const isSelectedSortableColumn = this.isCurrentColumnSortable(
+                getHeaderColumn(heading),
+              );
+              const isSortableColumn = this.isColumnSortable(
+                getHeaderColumn(heading),
+              );
+              const isHiddenHeading =
+                config &&
+                config.hiddenHeadings &&
+                config.hiddenHeadings.includes(heading);
 
-                return (
-                  <TableHeading
-                    key={index}
-                    onClick={
-                      isSortableColumn ? this.toggleSortedColumnDirection : noop
-                    }
-                    role={isSortableColumn ? 'button' : ''}
-                    isSortable={isSortableColumn}
-                    isReversed={isReversedColumn(heading)}
-                    data-testid={
-                      isSortableColumn ? 'sortable-column-heading' : ''
-                    }
-                  >
-                    {heading}
-                    {isSortableColumn && (
-                      <TableCaret
-                        icon="navDownCaret"
+              return (
+                <TableHeading
+                  key={index}
+                  // tslint:disable-next-line: jsx-no-lambda
+                  onClick={() =>
+                    isSortableColumn
+                      ? this.toggleSortedColumnDirection(
+                          getHeaderColumn(heading),
+                        )
+                      : noOp
+                  }
+                  role={isSortableColumn ? 'button' : ''}
+                  isSortable={isSortableColumn}
+                  isHidden={isHiddenHeading}
+                  isReversed={isReversedColumn(heading)}
+                  data-testid={
+                    isSortableColumn ? 'sortable-column-heading' : ''
+                  }
+                >
+                  {heading}
+                  {isSortableColumn &&
+                    (isSelectedSortableColumn ? (
+                      <IconArrow
                         isFlipped={
                           sortedColumnDirection === ColumnDirections.Reverse
                         }
                       />
-                    )}
-                  </TableHeading>
-                );
-              })}
-            </TableHead>
-          </TableHeaderContainer>
-          <tbody>
-            {/* Ungrouped rows are placed on top of grouped rows. */}
-            {body.map((row, rowIndex) => (
-              <TableRow key={rowIndex}>
-                {overlay ? (
-                  overlayRows ? (
-                    // Render overlay component for any row in the overlay list
-                    overlayRows.includes(rowIndex) ? (
-                      <td colSpan={head.length}>{overlay}</td>
                     ) : (
-                      row.map((cell, cellIndex) => (
-                        <TableCell
-                          key={cellIndex}
-                          isReversed={isReversedColumn(head[cellIndex])}
-                          data-testid={`ungrouped-${rowIndex}-${cellIndex}`}
-                        >
-                          {cell}
-                        </TableCell>
-                      ))
-                    )
-                  ) : (
-                    row.map((cell, cellIndex) => (
-                      <TableCell
-                        key={cellIndex}
-                        isReversed={isReversedColumn(head[cellIndex])}
-                        data-testid={`ungrouped-${rowIndex}-${cellIndex}`}
-                      >
-                        {cell}
-                      </TableCell>
-                    ))
-                  )
+                      <SortPlaceholder />
+                    ))}
+                </TableHeading>
+              );
+            })}
+          </TableHead>
+        </thead>
+        <tbody>
+          {/* Ungrouped rows are placed on top of grouped rows. */}
+          {body.map((row, rowIndex) => {
+            const primaryRowKey =
+              overlayRoot &&
+              row.length &&
+              row[0] &&
+              row[0].hasOwnProperty('key') &&
+              (row[0] as any).key;
+            if (primaryRowKey && overlayRows!.includes(primaryRowKey)) {
+              return (
+                <React.Fragment key={rowIndex}>
+                  {isFunction(overlay)
+                    ? (overlay(primaryRowKey) as ((...args: any[]) => any))
+                    : overlay}
+                </React.Fragment>
+              );
+            }
+
+            const isOverlayRowIncluded =
+              overlay && overlayRows!.includes(rowIndex);
+            const overlayRow =
+              isOverlayRowIncluded && isFunction(overlay)
+                ? overlay(rowIndex)
+                : overlay;
+            return (
+              // tslint:disable-next-line: jsx-no-lambda
+              <TableRow
+                key={rowIndex}
+                onClick={() => this.handleRowClicked(rowIndex)}
+              >
+                {isOverlayRowIncluded ? (
+                  // TODO: Solve jump in th width when the overlay is toggled.
+                  <td colSpan={head.length}>{overlayRow}</td>
                 ) : (
                   row.map((cell, cellIndex) => (
                     <TableCell
@@ -299,42 +333,74 @@ class AbstractTable extends Component<Props, State> {
                   ))
                 )}
               </TableRow>
-            ))}
-            {groups!.map(({ title, entries }) => (
-              <React.Fragment key={title}>
-                <TableGroupHead
-                  onClick={this.toggleCollapseGroup.bind(this, title)}
-                  role="button"
-                >
-                  <TableHeading colSpan={head.length}>
-                    {title}
-                    <TableCaret
-                      icon="navDownCaret"
-                      isFlipped={collapsedGroups[title]}
-                    />
-                  </TableHeading>
-                </TableGroupHead>
-                {/* Display group rows if not collapsed. */}
-                {!collapsedGroups[title] &&
-                  entries.map((row, rowIndex) => (
-                    <TableRow key={rowIndex}>
-                      {row.map((cell, cellIndex) => (
-                        <TableCell
-                          key={cellIndex}
-                          isReversed={isReversedColumn(head[cellIndex])}
-                        >
-                          {cell}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-              </React.Fragment>
-            ))}
-          </tbody>
-        </table>
-      </TableContainer>
+            );
+          })}
+          {groups!.map(({ title, entries, offset = 0 }) => (
+            <React.Fragment key={title}>
+              <TableGroupHead
+                onClick={this.toggleCollapseGroup.bind(this, title)}
+                role="button"
+              >
+                {/* Enter ghost cells to facilitate the offset. */}
+                {Array.from({ length: offset }, (_, index) => (
+                  <td key={index} />
+                ))}
+                <TableHeading colSpan={head.length - offset}>
+                  {title}
+                  <IconArrow isFlipped={collapsedGroups[title]} />
+                </TableHeading>
+              </TableGroupHead>
+              {/* Display group rows if not collapsed. */}
+              {!collapsedGroups[title] &&
+                entries.map((row, rowIndex) => (
+                  <TableRow key={rowIndex}>
+                    {row.map((cell, cellIndex) => (
+                      <TableCell
+                        key={cellIndex}
+                        isReversed={isReversedColumn(head[cellIndex])}
+                      >
+                        {cell}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+            </React.Fragment>
+          ))}
+        </tbody>
+      </table>
     );
   }
+
+  private readonly isCurrentColumnSortable = (heading: string) => {
+    return this.getCurrentColumnSortable() === heading;
+  };
+
+  private readonly getCurrentColumnSortable = () => {
+    const { currentSortColumn } = this.state;
+    const { config } = this.props;
+    const { sortableColumn } = config || {};
+
+    if (currentSortColumn) {
+      return currentSortColumn;
+    } else if (sortableColumn && typeof sortableColumn === 'string') {
+      return sortableColumn;
+    } else if (sortableColumn && Array.isArray(sortableColumn)) {
+      return sortableColumn[0];
+    }
+
+    return null;
+  };
+
+  private readonly isColumnSortable = (column: string) => {
+    const { config } = this.props;
+    const { sortableColumn } = config || {};
+
+    if (Array.isArray(sortableColumn)) {
+      return sortableColumn.some(c => c.includes(column));
+    }
+
+    return typeof sortableColumn === column;
+  };
 
   private readonly verifyTableLayout = () => {
     const { head, body, groups, config } = this.props;
@@ -344,22 +410,6 @@ class AbstractTable extends Component<Props, State> {
       throw new Error('A <Table /> must have at least one column.');
     }
 
-    const titleCounts = head.reduce(
-      (prev, next) => {
-        prev[next] = prev[next] ? prev[next] + 1 : 1;
-        return prev;
-      },
-      {} as Record<string, number>,
-    );
-
-    Object.entries(titleCounts).forEach(([key, value]) => {
-      if (key !== '' && value > 1) {
-        throw new Error(
-          `A <Table /> cannot have duplicate non-empty headings -- found multiple headings called "${key}".`,
-        );
-      }
-    });
-
     body.forEach((row, index) => {
       if (row.length !== columnCount) {
         throw new Error(
@@ -368,7 +418,7 @@ class AbstractTable extends Component<Props, State> {
       }
     });
 
-    groups!.forEach(({ title, entries }) => {
+    groups!.forEach(({ title, entries, offset }) => {
       if (!title || title === '') {
         throw new Error(
           `Untitled group in <Table /> -- all table groups must have a title.`,
@@ -382,16 +432,41 @@ class AbstractTable extends Component<Props, State> {
           );
         }
       });
+
+      if (offset && offset > columnCount - 1) {
+        throw new Error(`Bad offset in group "${title}" found in <Table />.`);
+      }
     });
 
-    const { sortableColumn } = config!;
+    const { sortableColumn, hiddenHeadings } = config!;
 
     if (sortableColumn) {
-      const sortedColumnExists = head.includes(sortableColumn);
-
-      if (!sortedColumnExists) {
+      const returnNonexistentColumn = () => {
         throw new Error(`Nonexistent sortable column provided to <Table />.`);
+      };
+
+      const headerIdentifiers = getHeaderColumns(head);
+      if (
+        Array.isArray(sortableColumn) &&
+        sortableColumn.some(c => !headerIdentifiers.includes(c))
+      ) {
+        return returnNonexistentColumn();
+      } else if (
+        typeof sortableColumn === 'string' &&
+        !headerIdentifiers.includes(sortableColumn)
+      ) {
+        return returnNonexistentColumn();
       }
+    }
+
+    if (hiddenHeadings) {
+      hiddenHeadings.forEach(heading => {
+        if (!head.includes(heading)) {
+          throw new Error(
+            `Unused heading ${heading} found in hiddenHeadings in <Table />`,
+          );
+        }
+      });
     }
   };
 
@@ -403,8 +478,9 @@ class AbstractTable extends Component<Props, State> {
       },
     }));
 
-  private readonly toggleSortedColumnDirection = () =>
+  private readonly toggleSortedColumnDirection = (currentSortColumn: string) =>
     this.setState(prevState => ({
+      currentSortColumn,
       sortedColumnDirection:
         prevState.sortedColumnDirection === ColumnDirections.Forward
           ? ColumnDirections.Reverse
@@ -414,10 +490,17 @@ class AbstractTable extends Component<Props, State> {
   private readonly getSortedLayout = (): TableContent => {
     const { head, body, groups, config } = this.props;
     const { sortedColumnDirection } = this.state;
+    const currentSortColumn = this.getCurrentColumnSortable();
 
     return config && config.sortableColumn
       ? {
-          body: getSortedRows(head, body, config, sortedColumnDirection),
+          body: getSortedRows(
+            head,
+            body,
+            config,
+            sortedColumnDirection,
+            currentSortColumn,
+          ),
           groups: groups!.map(group => ({
             ...group,
             entries: getSortedRows(
@@ -425,10 +508,25 @@ class AbstractTable extends Component<Props, State> {
               group.entries,
               config,
               sortedColumnDirection,
+              currentSortColumn,
             ),
           })),
         }
       : { body, groups };
+  };
+
+  private readonly handleRowClicked = (rowIndex: number) => {
+    const { config, overlay, overlayRows } = this.props;
+
+    // no click if overlay is shown or no handler function present
+    if (
+      (overlay && overlayRows!.includes(rowIndex)) ||
+      !config ||
+      !config.handleRowClicked
+    ) {
+      return;
+    }
+    config.handleRowClicked(rowIndex);
   };
 }
 
